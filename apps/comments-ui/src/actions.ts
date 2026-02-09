@@ -106,41 +106,49 @@ async function loadMoreReplies({state, api, data: {comment, limit}, isReply}: {s
 
 async function addComment({state, api, data: comment}: {state: EditableAppContext, api: GhostApi, data: AddComment}) {
     const data = await api.comments.add({comment});
-    comment = data.comments[0];
+    const newComment = data.comments[0];
+
+    const freshData = await api.comments.browse({
+        page: 1,
+        postId: newComment.post_id,
+        order: state.order
+    });
 
     return {
-        comments: [comment, ...state.comments],
-        commentCount: state.commentCount + 1
+        comments: freshData.comments,
+        pagination: freshData.meta?.pagination,
+        commentCount: freshData.meta?.pagination?.total ?? state.commentCount + 1,
+        commentIdToScrollTo: newComment.id
     };
 }
 
 async function addReply({state, api, data: {reply, parent}}: {state: EditableAppContext, api: GhostApi, data: {reply: any, parent: any}}) {
-    let comment = reply;
-    comment.parent_id = parent.id;
+    const data = await api.comments.add({
+        comment: {...reply, parent_id: parent.id}
+    });
+    const newComment = data.comments[0];
 
-    const data = await api.comments.add({comment});
-    comment = data.comments[0];
+    const freshData = await api.comments.replies({
+        commentId: parent.id,
+        limit: 10000
+    });
 
-    // When we add a reply,
-    // it is possible that we didn't load all the replies for the given comment yet.
-    // To fix that, we'll save the reply to a different field that is created locally to differentiate between replies before and after pagination 😅
-
-    // Replace the comment in the state with the new one
     return {
         comments: state.comments.map((c) => {
             if (c.id === parent.id) {
                 return {
-                    ...parent,
-                    replies: [...parent.replies, comment],
+                    ...c,
+                    replies: freshData.comments,
                     count: {
-                        ...parent.count,
-                        replies: parent.count.replies + 1
+                        ...c.count,
+                        replies: freshData.comments.length
                     }
                 };
             }
             return c;
         }),
-        commentCount: state.commentCount + 1
+        commentCount: state.commentCount + 1,
+        commentIdToScrollTo: newComment.id
     };
 }
 
@@ -428,23 +436,8 @@ function addOpenCommentForm({data: newForm, state}: {data: OpenCommentForm, stat
     }
 }
 
-async function openCommentForm({data: newForm, api, state, dispatchAction}: {data: OpenCommentForm, api: GhostApi, state: EditableAppContext, dispatchAction: DispatchActionType}) {
-    // Immediately show the form via sync action (avoids race with initAdminAuth)
+async function openCommentForm({data: newForm, dispatchAction}: {data: OpenCommentForm, api: GhostApi, state: EditableAppContext, dispatchAction: DispatchActionType}) {
     dispatchAction('addOpenCommentForm', newForm);
-
-    // When opening a reply form, we load in all of the replies for the parent comment so that
-    // the reply shown after posting appears in the correct place based on ordering
-    const topLevelCommentId = newForm.parent_id || newForm.id;
-    if (newForm.type === 'reply' && !state.openCommentForms.some(f => f.id === topLevelCommentId || f.parent_id === topLevelCommentId)) {
-        const comment = state.comments.find(c => c.id === topLevelCommentId);
-
-        if (comment) {
-            // we don't want the admin api to load reply data for replying to a reply, so we pass isReply: true
-            // TODO: why don't we want the admin api to load reply data for replying to a reply?
-            return await loadMoreReplies({state, api, data: {comment, limit: 'all'}, isReply: true});
-        }
-    }
-
     return {};
 }
 
